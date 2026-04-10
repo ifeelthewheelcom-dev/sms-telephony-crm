@@ -3,10 +3,13 @@
   "version": "1.0.0",
   "scripts": {
     "start": "concurrently \"cd server && node start.js\" \"cd client && npm run dev -- --port 8143\"",
-    "build": "cd client && npm install && npm run build && cd ../server && npm install",
+    "build": "cd client && rm -rf package-lock.json node_modules && npm install && npm run build && cd ../server && rm -rf package-lock.json node_modules && npm install",
     "prod": "cd server && node start.js"
   },
   "dependencies": {
     "concurrently": "^9.2.1"
+  },
+  "engines": {
+    "node": ">=20.0.0"
   }
 }

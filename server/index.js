@@ -451,4 +451,4 @@ if (process.env.NODE_ENV === 'production') {
   });
 }
 
-app.listen(port, () => console.log(`🚀 Supabase Backend running on http://localhost:${port}`));
+app.listen(port, '0.0.0.0', () => console.log(`🚀 Supabase Backend running on http://0.0.0.0:${port}`));

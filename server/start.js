@@ -13,9 +13,7 @@ const client = twilio(accountSid, authToken);
 
 async function start() {
     console.log('🟢 Starting Express server...');
-    const serverProcess = exec(`node index.js`);
-    serverProcess.stdout.pipe(process.stdout);
-    serverProcess.stderr.pipe(process.stderr);
+    require('./index.js');
 
     try {
         let url;
