@@ -3,6 +3,6 @@ builder = "NIXPACKS"
 buildCommand = "npm run build"
 
 [deploy]
-startCommand = "npm run prod"
+startCommand = "node server/index.js"
 restartPolicyType = "ON_FAILURE"
 restartPolicyMaxRetries = 10

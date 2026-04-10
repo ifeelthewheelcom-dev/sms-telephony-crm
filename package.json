@@ -4,7 +4,7 @@
   "scripts": {
     "start": "concurrently \"cd server && node start.js\" \"cd client && npm run dev -- --port 8143\"",
     "build": "cd server && npm install",
-    "prod": "cd server && node start.js"
+    "prod": "node server/index.js"
   },
   "dependencies": {
     "concurrently": "^9.2.1"
