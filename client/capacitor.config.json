@@ -1,0 +1,5 @@
+{
+  "appId": "com.stellar.smsapp",
+  "appName": "SMSApp",
+  "webDir": "dist"
+}

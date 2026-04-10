@@ -1,0 +1,7 @@
+<?xml version='1.0' encoding='utf-8'?>
+<resources>
+    <string name="app_name">SMSApp</string>
+    <string name="title_activity_main">SMSApp</string>
+    <string name="package_name">com.stellar.smsapp</string>
+    <string name="custom_url_scheme">com.stellar.smsapp</string>
+</resources>
