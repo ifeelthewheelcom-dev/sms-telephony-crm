@@ -3,7 +3,7 @@
   "version": "1.0.0",
   "scripts": {
     "start": "concurrently \"cd server && node start.js\" \"cd client && npm run dev -- --port 8143\"",
-    "build": "cd server && npm install",
+    "build": "cd server && npm install && cd ../client && npm install && npm run build",
     "prod": "node server/index.js"
   },
   "dependencies": {
