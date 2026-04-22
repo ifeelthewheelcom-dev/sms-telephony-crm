@@ -68,7 +68,10 @@ app.post('/api/messages/send', async (req, res) => {
   
   const originalTo = to;
   let cleanTo = to.replace(/[^\d+]/g, '');
-  if (cleanTo && !cleanTo.startsWith('+')) cleanTo = '+' + cleanTo;
+  if (cleanTo && !cleanTo.startsWith('+')) {
+    // 10-digit US number → add +1 country code
+    cleanTo = cleanTo.length === 10 ? '+1' + cleanTo : '+' + cleanTo;
+  }
 
   // Search by either format, fetching the most recently updated if multiple exist
   const { data: matchRows } = await db.from('contacts')
@@ -459,8 +462,8 @@ app.post('/api/webhooks/incoming-sms', async (req, res) => {
   // Sanitize both numbers — Twilio sometimes sends them with formatting variations
   let cleanFrom = (From || '').replace(/[^\d+]/g, '');
   let cleanTo   = (To   || '').replace(/[^\d+]/g, '');
-  if (cleanFrom && !cleanFrom.startsWith('+')) cleanFrom = '+' + cleanFrom;
-  if (cleanTo && !cleanTo.startsWith('+')) cleanTo = '+' + cleanTo;
+  if (cleanFrom && !cleanFrom.startsWith('+')) cleanFrom = cleanFrom.length === 10 ? '+1' + cleanFrom : '+' + cleanFrom;
+  if (cleanTo   && !cleanTo.startsWith('+'))   cleanTo   = cleanTo.length   === 10 ? '+1' + cleanTo   : '+' + cleanTo;
 
   console.log(`\n📨 INCOMING SMS | From: ${cleanFrom} → To: ${cleanTo} | Body: "${Body}"`);
 
