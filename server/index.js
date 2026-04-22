@@ -43,7 +43,7 @@ app.use('/api', authMiddleware);
 
 // -- INBOX ENDPOINTS --
 app.get('/api/contacts', async (req, res) => {
-  const { data, error } = await db.from('contacts').select('*').eq('user_id', req.user.id).order('updated_at', { ascending: false });
+  const { data, error } = await db.from('contacts').select('*').eq('user_id', req.user.id).not('last_message', 'is', null).order('updated_at', { ascending: false });
   if (error) return res.status(500).json({ error: error.message });
   res.json(data || []);
 });
@@ -90,6 +90,16 @@ app.post('/api/messages/send', async (req, res) => {
     if (row) await db.from('contacts').update({ assigned_sender_number: fromNumber, updated_at: new Date().toISOString() }).eq('id', row.id);
   } else if (row && row.assigned_sender_number) {
     fromNumber = row.assigned_sender_number;
+  }
+
+  // Parse custom variables out dynamically prior to sending manual outbounds
+  if (row && row.custom_variables) {
+      try {
+          const vars = typeof row.custom_variables === 'string' ? JSON.parse(row.custom_variables) : row.custom_variables;
+          content = content.replace(/\{\{\s*([a-zA-Z0-9_\s-]+)\s*\}\}/g, (match, p1) => {
+              return vars[p1] !== undefined ? vars[p1] : match;
+          });
+      } catch(e) {}
   }
 
   try {
@@ -177,6 +187,21 @@ app.get('/api/lists', async (req, res) => {
         enriched.push({ ...l, lead_count: count || 0 });
     }
     res.json(enriched);
+});
+
+app.get('/api/lists/:id/columns', async (req, res) => {
+    const { data, error } = await db.from('lead_lists_mapping')
+           .select('contacts(custom_variables)')
+           .eq('list_id', req.params.id)
+           .not('contacts.custom_variables', 'is', null)
+           .limit(1)
+           .single();
+           
+    if (error || !data || !data.contacts || !data.contacts.custom_variables) return res.json([]);
+    try {
+        const vars = typeof data.contacts.custom_variables === 'string' ? JSON.parse(data.contacts.custom_variables) : data.contacts.custom_variables;
+        res.json(Object.keys(vars));
+    } catch(e) { res.json([]); }
 });
 
 app.post('/api/lists/upload', upload.single('file'), async (req, res) => {

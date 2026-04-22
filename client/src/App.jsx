@@ -438,6 +438,28 @@ const InboxTab = ({ senders, callStatus, makeCall }) => {
                   {senders.map(s => <option key={s.id} value={s.phone_number}>{s.name || s.phone_number}</option>)}
                 </select>
               </div>
+              
+              {(() => {
+                 let customVars = {};
+                 let keys = [];
+                 try {
+                     if (selectedContact?.custom_variables) {
+                         customVars = typeof selectedContact.custom_variables === 'string' ? JSON.parse(selectedContact.custom_variables) : selectedContact.custom_variables;
+                         keys = Object.keys(customVars || {});
+                     }
+                 } catch(e) {}
+                 return keys.length > 0 ? (
+                    <div className="flex gap-2 overflow-x-auto pb-1.5 pt-0.5 scrollbar-thin scrollbar-thumb-[#2a3942] scrollbar-track-transparent">
+                      <span className="text-[9px] text-emerald-500/70 uppercase tracking-widest font-bold flex items-center shrink-0">Inject Raw CSV:</span>
+                      {keys.map(k => (
+                        <button type="button" key={k} onClick={() => setMessageInput(prev => prev + (prev.endsWith(' ') || prev==='' ? '' : ' ') + customVars[k])} className="text-[10px] bg-[#111b21] border border-[#2a3942] hover:border-emerald-500 hover:bg-emerald-500/10 hover:text-emerald-400 px-2 py-1 rounded-md text-neutral-400 whitespace-nowrap transition-colors flex-shrink-0">
+                          {k}
+                        </button>
+                      ))}
+                    </div>
+                 ) : null;
+              })()}
+              
               <form onSubmit={handleSend} className="flex gap-2">
                 <input type="text" value={messageInput} onChange={(e) => setMessageInput(e.target.value)} placeholder="Type a message..." className="flex-1 bg-[#2a3942] border border-[#111b21] rounded-xl px-4 py-3 text-white focus:outline-none focus:border-blue-500/50 focus:ring-1 focus:ring-blue-500/50 transition placeholder:text-neutral-500 text-sm" />
                 <button type="submit" disabled={!messageInput.trim()} className="bg-emerald-600 disabled:bg-neutral-800 disabled:text-neutral-600 text-white w-12 rounded-xl flex items-center justify-center transition-all shadow hover:bg-emerald-500 active:scale-95 group">
@@ -551,6 +573,14 @@ const CampaignsTab = ({ senders }) => {
     const [cSenders, setCSenders] = useState([]);
     const [cDripRate, setCDripRate] = useState(0);
     const [steps, setSteps] = useState([{ delay_minutes: 0, content: '' }]);
+    const [listColumns, setListColumns] = useState([]);
+
+    useEffect(() => {
+        if (!cList) {
+            setListColumns([]); return;
+        }
+        authFetch(`${API_BASE}/lists/${cList}/columns`).then(r => r.json()).then(cols => setListColumns(cols || [])).catch(() => {});
+    }, [cList]);
 
     const toggleSender = (num) => {
         if (cSenders.includes(num)) setCSenders(cSenders.filter(n => n !== num));
@@ -630,7 +660,20 @@ const CampaignsTab = ({ senders }) => {
                                               </div>
                                            )}
                                            <textarea rows={3} placeholder="Write SMS message content..." value={st.content} onChange={e=>updateStep(i, 'content', e.target.value)} className="w-full bg-transparent outline-none text-sm text-neutral-100 resize-none font-medium leading-relaxed mb-1"></textarea>
-                                           <p className="text-[10px] text-emerald-400/80 mb-2 font-mono">Tip: Inject dynamic CSV fields like {'{{firstName}}'} or {'{{companyName}}'}</p>
+                                           
+                                           {listColumns.length > 0 ? (
+                                              <div className="mt-1 flex gap-1.5 overflow-x-auto pb-1 border-t border-[#2a3942]/40 pt-2">
+                                                <span className="text-[9px] text-emerald-500/70 uppercase tracking-widest font-bold flex items-center shrink-0">Inject {{CSV}}:</span>
+                                                {listColumns.map(col => (
+                                                  <button type="button" key={col} onClick={() => updateStep(i, 'content', st.content + (st.content.endsWith(' ') || st.content==='' ? '' : ' ') + `{{${col}}}`)} className="text-[10px] bg-[#111b21] border border-[#2a3942] hover:border-emerald-500 hover:bg-emerald-500/10 hover:text-emerald-400 px-2 py-1 rounded-md text-neutral-400 whitespace-nowrap transition-all shadow-sm">
+                                                    {col}
+                                                  </button>
+                                                ))}
+                                              </div>
+                                           ) : (
+                                              <p className="text-[10px] text-emerald-400/80 mb-2 font-mono">Tip: Select a Lead List above to dynamically inject custom CSV column names like {'{{firstName}}'}</p>
+                                           )}
+                                           
                                            {steps.length > 1 && <button onClick={()=>removeStep(i)} className="absolute top-4 right-4 text-xs font-bold text-rose-500/50 hover:text-rose-500 transition-colors uppercase tracking-widest">Remove</button>}
                                        </div>
                                    </div>
