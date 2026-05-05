@@ -568,7 +568,9 @@ const InboxTab = ({ senders, callStatus, makeCall, selectedContact, setSelectedC
                 <div className="flex-1 min-w-0" onClick={(e) => { if(isSelectionMode) toggleContactSelection(c.id, e) }}>
                   <div className="flex justify-between items-baseline mb-0.5">
                     <h3 className="font-semibold text-neutral-100 truncate text-sm cursor-pointer">{c.name || c.phone_number}</h3>
-                    <span className="text-[10px] text-neutral-500 flex-shrink-0 ml-2">{new Date(c.updated_at).toLocaleString([], {month: 'short', day: 'numeric', hour: '2-digit', minute:'2-digit'})}</span>
+                    <span className="text-[10px] text-neutral-500 flex-shrink-0 ml-2">
+                      {new Date(c.updated_at).toLocaleDateString('en-US', {month: 'short', day: 'numeric'}) + ', ' + new Date(c.updated_at).toLocaleTimeString('en-US', {hour: '2-digit', minute:'2-digit'})}
+                    </span>
                   </div>
                   <p className="text-xs text-neutral-400 truncate cursor-pointer">{c.last_message}</p>
                 </div>
@@ -692,7 +694,9 @@ const InboxTab = ({ senders, callStatus, makeCall, selectedContact, setSelectedC
                       {msg.type !== 'call' && <p className="whitespace-pre-wrap">{msg.content}</p>}
                       {msg.type === 'call' && !msg.recording_url && <p className="whitespace-pre-wrap italic opacity-80">{msg.content}</p>}
                       <div className="flex justify-end items-center mt-1 opacity-60">
-                        <span className="text-[9px] uppercase">{new Date(msg.created_at).toLocaleString([], {month: 'short', day: 'numeric', hour: '2-digit', minute:'2-digit'})}</span>
+                        <span className="text-[9px] uppercase">
+                          {new Date(msg.created_at).toLocaleDateString('en-US', {month: 'short', day: 'numeric'}) + ', ' + new Date(msg.created_at).toLocaleTimeString('en-US', {hour: '2-digit', minute:'2-digit'})}
+                        </span>
                       </div>
                     </div>
                   </div>
