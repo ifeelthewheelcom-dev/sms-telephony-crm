@@ -23,6 +23,11 @@ const twilioClient = twilio(accountSid, authToken);
 
 const upload = multer({ dest: 'uploads/' });
 
+// In-memory queue that reliably bridges call-ended ↔ recording-ready
+// regardless of which webhook fires first.
+// recordingQueue[callSid] = { messageId } | { recordingUrl }
+const recordingQueue = new Map();
+
 // -- MIDDLEWARE --
 // Validates the JWT from the frontend and extracts the underlying user session.
 const authMiddleware = async (req, res, next) => {
@@ -504,96 +509,105 @@ app.post('/api/webhooks/incoming-call', async (req, res) => {
 // Logs the call to the conversation board once it's finished or missed
 app.post('/api/webhooks/call-ended', async (req, res) => {
   const { direction, target, userId } = req.query;
-  const { DialCallStatus, DialCallDuration, From, RecordingUrl } = req.body;
+  const { DialCallStatus, DialCallDuration, From, RecordingUrl, CallSid } = req.body;
   const cleanFrom = (From || '').replace(/[^\d+]/g, '');
   let phoneStr = cleanFrom;
   if (phoneStr && !phoneStr.startsWith('+')) phoneStr = '+' + phoneStr;
 
-  let actualUserId = userId;
-  let contactPhone = direction === 'outbound' ? target : phoneStr;
-  
+  // For inbound, if From is a client identity (no digits), use the caller from
+  // the Twilio-supplied 'Called' or fall back gracefully
+  let actualUserId = userId || '';
+  let contactPhone = direction === 'outbound' ? decodeURIComponent(target || '') : phoneStr;
+
   if (direction === 'outbound') {
-     // User initiated from browser
-     const callerId = process.env.TWILIO_PHONE_NUMBER;
-     const { data: phoneMatch } = await db.from('user_phone_numbers').select('user_id').eq('phone_number', callerId).single();
-     if (phoneMatch) actualUserId = phoneMatch.user_id;
+    const callerId = process.env.TWILIO_PHONE_NUMBER;
+    const { data: phoneMatch } = await db.from('user_phone_numbers').select('user_id').eq('phone_number', callerId).single();
+    if (phoneMatch) actualUserId = phoneMatch.user_id;
   }
-  
+
   if (!actualUserId) {
     const { data: admin } = await db.from('profiles').select('id').eq('role', 'admin').single();
     if (admin) actualUserId = admin.id;
   }
 
-  if (actualUserId) {
-    // Upsert contact
+  console.log(`📋 call-ended | dir=${direction} status=${DialCallStatus} contact=${contactPhone} user=${actualUserId} callSid=${CallSid}`);
+
+  if (actualUserId && contactPhone) {
     let contact_id = null;
     const { data: existingContact } = await db.from('contacts').select('id').eq('phone_number', contactPhone).eq('user_id', actualUserId).single();
     if (existingContact) {
       contact_id = existingContact.id;
     } else {
-      const { data: newContact } = await db.from('contacts').insert([{ user_id: actualUserId, phone_number: contactPhone, name: 'Unknown' }]).select('id').single();
+      const { data: newContact } = await db.from('contacts').insert([{ user_id: actualUserId, phone_number: contactPhone, last_message: '[ Call ]', updated_at: new Date().toISOString() }]).select('id').single();
       if (newContact) contact_id = newContact.id;
     }
 
     if (contact_id) {
-       let msgContent = DialCallStatus === 'completed' 
-          ? `📞 ${direction === 'outbound' ? 'Outbound' : 'Inbound'} Call (${DialCallDuration || 0}s)`
-          : `❌ Missed Call (${direction === 'outbound' ? 'No Answer' : 'Missed'})`;
-          
-         // Only attach recording on completed calls — missed/no-answer calls don't get one
-         const callRecordingUrl = (DialCallStatus === 'completed' && RecordingUrl)
-           ? `${RecordingUrl}.mp3`
-           : null;
+      const isCompleted = DialCallStatus === 'completed';
+      const msgContent = isCompleted
+        ? `📞 ${direction === 'outbound' ? 'Outbound' : 'Inbound'} Call (${DialCallDuration || 0}s)`
+        : `❌ Missed ${direction === 'outbound' ? 'Outbound' : 'Inbound'} Call`;
 
-       await db.from('messages').insert([{
-         user_id: actualUserId,
-         contact_id,
-         direction,
-         type: 'call',
-         content: msgContent,
-         status: DialCallStatus || 'failed',
-         recording_url: callRecordingUrl
-       }]);
+      // Use RecordingUrl from action body if Twilio already has it (short calls)
+      const immediateRecUrl = (isCompleted && RecordingUrl) ? `${RecordingUrl}.mp3` : null;
+
+      const { data: savedMsg } = await db.from('messages').insert([{
+        user_id: actualUserId,
+        contact_id,
+        direction,
+        type: 'call',
+        content: msgContent,
+        status: DialCallStatus || 'failed',
+        recording_url: immediateRecUrl
+      }]).select('id').single();
+
+      // Wire up in-memory queue so recording-ready can find this message by CallSid
+      if (isCompleted && CallSid && !immediateRecUrl && savedMsg?.id) {
+        const queued = recordingQueue.get(CallSid);
+        if (queued?.recordingUrl) {
+          // recording-ready already fired — apply now
+          await db.from('messages').update({ recording_url: queued.recordingUrl }).eq('id', savedMsg.id);
+          recordingQueue.delete(CallSid);
+          console.log(`✅ Recording applied immediately from queue for ${CallSid}`);
+        } else {
+          recordingQueue.set(CallSid, { messageId: savedMsg.id });
+          setTimeout(() => recordingQueue.delete(CallSid), 600000);
+        }
+      }
+
+      // Update contact last_message
+      await db.from('contacts').update({ last_message: msgContent, updated_at: new Date().toISOString() }).eq('id', contact_id);
     }
   }
 
-  // Twilio needs an empty TwiML response to close the action hook gracefully
   const twiml = new twilio.twiml.VoiceResponse();
   res.type('text/xml').send(twiml.toString());
 });
 
+
 // Called by Twilio when a recording is fully processed and ready.
-// Updates the existing call message row with the recording URL.
+// Uses the in-memory recordingQueue to find the right message by CallSid.
 app.post('/api/webhooks/recording-ready', async (req, res) => {
-  const { CallSid, RecordingUrl, RecordingStatus } = req.body;
-  console.log(`🎙️ Recording ready: ${RecordingStatus} | CallSid: ${CallSid} | URL: ${RecordingUrl}`);
+  const { CallSid, ParentCallSid, RecordingUrl, RecordingStatus } = req.body;
+  console.log(`🎙️ Recording ready: ${RecordingStatus} | CallSid: ${CallSid} | Parent: ${ParentCallSid} | URL: ${RecordingUrl}`);
 
-  if (RecordingStatus === 'completed' && CallSid && RecordingUrl) {
-    // Find the call message logged for this CallSid, or its parent leg
-    // Messages are logged by contact — search by content matching the call pattern
-    // We store CallSid in content? No — so we match by recency for this CallSid's contact.
-    // Best approach: update via a direct match on call-type messages missing recording_url,
-    // ordered by created_at desc, scoped to very recent (last 10 minutes)
-    const tenMinutesAgo = new Date(Date.now() - 10 * 60 * 1000).toISOString();
+  if (RecordingStatus === 'completed' && RecordingUrl) {
     const mp3Url = `${RecordingUrl}.mp3`;
+    const sid = CallSid || ParentCallSid;
 
-    // Update the most recently created call message that has no recording yet
-    const { data: rows } = await db.from('messages')
-      .select('id, user_id, contact_id')
-      .eq('type', 'call')
-      .is('recording_url', null)
-      .gt('created_at', tenMinutesAgo)
-      .order('created_at', { ascending: false })
-      .limit(1);
-
-    if (rows && rows.length > 0) {
-      const row = rows[0];
-      await db.from('messages').update({ recording_url: mp3Url }).eq('id', row.id);
-      console.log(`✅ Recording URL attached to message ${row.id}`);
+    const queued = recordingQueue.get(sid) || recordingQueue.get(ParentCallSid) || recordingQueue.get(CallSid);
+    if (queued?.messageId) {
+      // call-ended already fired — update message directly by ID
+      await db.from('messages').update({ recording_url: mp3Url }).eq('id', queued.messageId);
+      recordingQueue.delete(sid);
+      recordingQueue.delete(ParentCallSid);
+      console.log(`✅ Recording attached to message ${queued.messageId}`);
     } else {
-      // Call-ended fires before recording-ready — insert a pending row to hold it
-      // Actually just log it; the call-ended already handles the message insert.
-      console.log(`⚠️ No matching call message found to attach recording (may already have one or too old)`);
+      // call-ended hasn't fired yet — store URL so call-ended can apply it
+      recordingQueue.set(sid, { recordingUrl: mp3Url });
+      if (ParentCallSid) recordingQueue.set(ParentCallSid, { recordingUrl: mp3Url });
+      setTimeout(() => { recordingQueue.delete(sid); recordingQueue.delete(ParentCallSid); }, 600000);
+      console.log(`⏳ Recording queued for CallSid ${sid} — awaiting call-ended`);
     }
   }
 

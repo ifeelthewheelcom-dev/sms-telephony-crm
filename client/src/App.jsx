@@ -692,7 +692,17 @@ const InboxTab = ({ senders, callStatus, makeCall, selectedContact, setSelectedC
                       {msg.type !== 'call' && <p className="whitespace-pre-wrap">{msg.content}</p>}
                       {msg.type === 'call' && !msg.recording_url && <p className="whitespace-pre-wrap italic opacity-80">{msg.content}</p>}
                       <div className="flex justify-end items-center mt-1 opacity-60">
-                        <span className="text-[9px] uppercase">{new Date(msg.created_at).toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'})}</span>
+                        <span className="text-[9px] uppercase">{(() => {
+                          const d = new Date(msg.created_at);
+                          const now = new Date();
+                          const isToday = d.toDateString() === now.toDateString();
+                          const yesterday = new Date(now); yesterday.setDate(now.getDate() - 1);
+                          const isYesterday = d.toDateString() === yesterday.toDateString();
+                          const time = d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+                          if (isToday) return `Today, ${time}`;
+                          if (isYesterday) return `Yesterday, ${time}`;
+                          return d.toLocaleDateString([], { month: 'short', day: 'numeric' }) + ', ' + time;
+                        })()}</span>
                       </div>
                     </div>
                   </div>
