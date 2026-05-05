@@ -15,29 +15,13 @@ const port = process.env.PORT || 8142;
 app.use(cors());
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
-// Trust Railway's reverse proxy so req.protocol returns 'https' correctly
-app.set('trust proxy', 1);
 
 const accountSid = process.env.TWILIO_ACCOUNT_SID;
 const authToken = process.env.TWILIO_AUTH_TOKEN;
 const twilioNumber = process.env.TWILIO_PHONE_NUMBER;
 const twilioClient = twilio(accountSid, authToken);
 
-// Prefer an explicit BASE_URL env var (set this in Railway dashboard).
-// Always force HTTPS — Railway terminates SSL at the load balancer so
-// req.protocol would otherwise return 'http', which Twilio rejects for callbacks.
-const getBaseUrl = (req) => {
-  if (process.env.BASE_URL) return process.env.BASE_URL;
-  const host = req.get('x-forwarded-host') || req.get('host');
-  return `https://${host}`; // always HTTPS — Twilio requires it
-};
-
 const upload = multer({ dest: 'uploads/' });
-
-// In-memory queue that reliably bridges call-ended ↔ recording-ready
-// regardless of which webhook fires first.
-// recordingQueue[callSid] = { messageId } | { recordingUrl }
-const recordingQueue = new Map();
 
 // -- MIDDLEWARE --
 // Validates the JWT from the frontend and extracts the underlying user session.
@@ -455,45 +439,34 @@ app.get('/api/voice/token', (req, res) => {
 // -- TWILIO WEBHOOKS (Public) --
 // Called by Twilio when the Twilio.Device.connect() fires from the browser
 app.post('/api/webhooks/outbound-call', async (req, res) => {
-  // Twilio encodes '+' as a space in form-posted params — restore it
-  let targetNumber = (req.body.TargetNumber || '').replace(/\s/g, '+').trim();
+  let targetNumber = req.body.TargetNumber;
+  if (targetNumber) targetNumber = targetNumber.replace(' ', '+');
   const callerId = process.env.TWILIO_PHONE_NUMBER;
-  const base = getBaseUrl(req);
-  console.log(`📤 outbound-call | target=${targetNumber} | base=${base}`);
-
   const twiml = new twilio.twiml.VoiceResponse();
   if (targetNumber) {
-    // Resolve which user owns the caller ID so we can pass userId in the action URL
-    let ownerUserId = '';
-    const { data: ownerMatch } = await db.from('user_phone_numbers').select('user_id').eq('phone_number', callerId).single();
-    if (ownerMatch?.user_id) {
-      ownerUserId = ownerMatch.user_id;
-    } else {
-      const { data: admin } = await db.from('profiles').select('id').eq('role', 'admin').single();
-      if (admin?.id) ownerUserId = admin.id;
-    }
-
-    const dial = twiml.dial({
-      callerId,
+    const dial = twiml.dial({ 
+      callerId, 
       answerOnBridge: true,
       record: 'record-from-answer',
-      recordingStatusCallback: `${base}/api/webhooks/recording-ready`,
-      recordingStatusCallbackMethod: 'POST',
-      action: `${base}/api/webhooks/call-ended?direction=outbound&target=${encodeURIComponent(targetNumber)}&userId=${encodeURIComponent(ownerUserId)}`
+      recordingStatusCallback: `https://${req.get('host')}/api/webhooks/recording-ready`,
+      recordingStatusCallbackMethod: 'POST'
     });
-    dial.number(targetNumber);
+    dial.number({
+      statusCallback: `https://${req.get('host')}/api/webhooks/call-ended?direction=outbound&target=${encodeURIComponent(targetNumber)}`,
+      statusCallbackEvent: 'completed',
+      statusCallbackMethod: 'POST'
+    }, targetNumber);
   } else {
     twiml.say('No target number provided.');
   }
   res.type('text/xml').send(twiml.toString());
 });
 
-
 // Called by Twilio when an inbound VOICE call comes in to one of your numbers
 app.post('/api/webhooks/incoming-call', async (req, res) => {
   const twiml = new twilio.twiml.VoiceResponse();
   try {
-    const { To } = req.body;
+    const { To, From } = req.body;
     let cleanTo = (To || '').replace(/[^\d+]/g, '');
     if (cleanTo && !cleanTo.startsWith('+')) cleanTo = '+' + cleanTo;
     console.log(`📞 Inbound voice call to: ${cleanTo}`);
@@ -512,16 +485,18 @@ app.post('/api/webhooks/incoming-call', async (req, res) => {
     }
 
     if (clientIdentity) {
-      const base = getBaseUrl(req);
       const dial = twiml.dial({ 
         timeout: 30, 
         answerOnBridge: true,
         record: 'record-from-answer',
-        recordingStatusCallback: `${base}/api/webhooks/recording-ready`,
-        recordingStatusCallbackMethod: 'POST',
-        action: `${base}/api/webhooks/call-ended?direction=inbound&target=${encodeURIComponent(cleanTo)}&userId=${encodeURIComponent(phoneMatch?.user_id || '')}`
+        recordingStatusCallback: `https://${req.get('host')}/api/webhooks/recording-ready`,
+        recordingStatusCallbackMethod: 'POST'
       });
-      dial.client(clientIdentity);
+      dial.client({
+        statusCallback: `https://${req.get('host')}/api/webhooks/call-ended?direction=inbound&target=${encodeURIComponent(cleanTo)}&userId=${encodeURIComponent(phoneMatch?.user_id || '')}&caller=${encodeURIComponent(From || '')}`,
+        statusCallbackEvent: 'completed',
+        statusCallbackMethod: 'POST'
+      }, clientIdentity);
     } else {
       twiml.say('Sorry, no agent is available right now.');
     }
@@ -534,107 +509,97 @@ app.post('/api/webhooks/incoming-call', async (req, res) => {
 
 // Logs the call to the conversation board once it's finished or missed
 app.post('/api/webhooks/call-ended', async (req, res) => {
-  const { direction, target, userId } = req.query;
-  const { DialCallStatus, DialCallDuration, From, RecordingUrl, CallSid, DialCallSid } = req.body;
-  const cleanFrom = (From || '').replace(/[^\d+]/g, '');
+  const { direction, target, userId, caller } = req.query;
+  const { DialCallStatus, DialCallDuration, CallStatus, CallDuration, From } = req.body;
+  
+  const fromNum = caller || From || '';
+  const cleanFrom = fromNum.replace(/[^\d+]/g, '');
   let phoneStr = cleanFrom;
   if (phoneStr && !phoneStr.startsWith('+')) phoneStr = '+' + phoneStr;
 
-  // userId is now explicitly passed in the action URL for both directions
-  let actualUserId = userId || '';
-  // For outbound: target is the dialed number (already URL-decoded by Express)
-  // For inbound:  From is the caller's number
-  let contactPhone = direction === 'outbound' ? (target || '') : phoneStr;
-
-  // Last resort: admin fallback
+  let actualUserId = userId;
+  let contactPhone = direction === 'outbound' ? target : phoneStr;
+  
+  if (direction === 'outbound') {
+     // User initiated from browser
+     const callerId = process.env.TWILIO_PHONE_NUMBER;
+     const { data: phoneMatch } = await db.from('user_phone_numbers').select('user_id').eq('phone_number', callerId).single();
+     if (phoneMatch) actualUserId = phoneMatch.user_id;
+  }
+  
   if (!actualUserId) {
     const { data: admin } = await db.from('profiles').select('id').eq('role', 'admin').single();
     if (admin) actualUserId = admin.id;
   }
 
-  console.log(`📋 call-ended | dir=${direction} status=${DialCallStatus} contact=${contactPhone} user=${actualUserId} callSid=${CallSid} dialCallSid=${DialCallSid}`);
-
-  if (actualUserId && contactPhone) {
+  if (actualUserId) {
+    // Upsert contact
     let contact_id = null;
     const { data: existingContact } = await db.from('contacts').select('id').eq('phone_number', contactPhone).eq('user_id', actualUserId).single();
     if (existingContact) {
       contact_id = existingContact.id;
     } else {
-      const { data: newContact } = await db.from('contacts').insert([{ user_id: actualUserId, phone_number: contactPhone, last_message: '[ Call ]', updated_at: new Date().toISOString() }]).select('id').single();
+      const { data: newContact } = await db.from('contacts').insert([{ user_id: actualUserId, phone_number: contactPhone, name: 'Unknown' }]).select('id').single();
       if (newContact) contact_id = newContact.id;
     }
 
     if (contact_id) {
-      const isCompleted = DialCallStatus === 'completed';
-      const msgContent = isCompleted
-        ? `📞 ${direction === 'outbound' ? 'Outbound' : 'Inbound'} Call (${DialCallDuration || 0}s)`
-        : `❌ Missed ${direction === 'outbound' ? 'Outbound' : 'Inbound'} Call`;
+       const statusToUse = CallStatus || DialCallStatus || 'failed';
+       const durationToUse = CallDuration || DialCallDuration || 0;
 
-      // Use RecordingUrl from action body if Twilio already has it (short calls)
-      const immediateRecUrl = (isCompleted && RecordingUrl) ? `${RecordingUrl}.mp3` : null;
+       let msgContent = statusToUse === 'completed' 
+          ? `📞 ${direction === 'outbound' ? 'Outbound' : 'Inbound'} Call (${durationToUse}s)`
+          : `❌ Missed Call (${direction === 'outbound' ? 'No Answer' : 'Missed'})`;
 
-      const { data: savedMsg } = await db.from('messages').insert([{
-        user_id: actualUserId,
-        contact_id,
-        direction,
-        type: 'call',
-        content: msgContent,
-        status: DialCallStatus || 'failed',
-        recording_url: immediateRecUrl
-      }]).select('id').single();
-
-      // Wire up in-memory queue so recording-ready can find this message by CallSid
-      if (isCompleted && (CallSid || DialCallSid) && !immediateRecUrl && savedMsg?.id) {
-        const queued = recordingQueue.get(CallSid) || recordingQueue.get(DialCallSid);
-        if (queued?.recordingUrl) {
-          // recording-ready already fired — apply now
-          await db.from('messages').update({ recording_url: queued.recordingUrl }).eq('id', savedMsg.id);
-          if (CallSid) recordingQueue.delete(CallSid);
-          if (DialCallSid) recordingQueue.delete(DialCallSid);
-          console.log(`✅ Recording applied immediately from queue for ${CallSid || DialCallSid}`);
-        } else {
-          if (CallSid) recordingQueue.set(CallSid, { messageId: savedMsg.id });
-          if (DialCallSid) recordingQueue.set(DialCallSid, { messageId: savedMsg.id });
-          setTimeout(() => {
-            if (CallSid) recordingQueue.delete(CallSid);
-            if (DialCallSid) recordingQueue.delete(DialCallSid);
-          }, 600000);
-        }
-      }
-
-      // Update contact last_message
-      await db.from('contacts').update({ last_message: msgContent, updated_at: new Date().toISOString() }).eq('id', contact_id);
+       await db.from('messages').insert([{
+         user_id: actualUserId,
+         contact_id,
+         direction,
+         type: 'call',
+         content: msgContent,
+         status: statusToUse,
+         recording_url: null // handled by recording-ready webhook
+       }]);
     }
   }
 
+  // Twilio needs an empty TwiML response to close the action hook gracefully
   const twiml = new twilio.twiml.VoiceResponse();
   res.type('text/xml').send(twiml.toString());
 });
 
-
 // Called by Twilio when a recording is fully processed and ready.
-// Uses the in-memory recordingQueue to find the right message by CallSid.
+// Updates the existing call message row with the recording URL.
 app.post('/api/webhooks/recording-ready', async (req, res) => {
-  const { CallSid, ParentCallSid, RecordingUrl, RecordingStatus } = req.body;
-  console.log(`🎙️ Recording ready: ${RecordingStatus} | CallSid: ${CallSid} | Parent: ${ParentCallSid} | URL: ${RecordingUrl}`);
+  const { CallSid, RecordingUrl, RecordingStatus } = req.body;
+  console.log(`🎙️ Recording ready: ${RecordingStatus} | CallSid: ${CallSid} | URL: ${RecordingUrl}`);
 
-  if (RecordingStatus === 'completed' && RecordingUrl) {
+  if (RecordingStatus === 'completed' && CallSid && RecordingUrl) {
+    // Find the call message logged for this CallSid, or its parent leg
+    // Messages are logged by contact — search by content matching the call pattern
+    // We store CallSid in content? No — so we match by recency for this CallSid's contact.
+    // Best approach: update via a direct match on call-type messages missing recording_url,
+    // ordered by created_at desc, scoped to very recent (last 10 minutes)
+    const tenMinutesAgo = new Date(Date.now() - 10 * 60 * 1000).toISOString();
     const mp3Url = `${RecordingUrl}.mp3`;
-    const sid = CallSid || ParentCallSid;
 
-    const queued = recordingQueue.get(sid) || recordingQueue.get(ParentCallSid) || recordingQueue.get(CallSid);
-    if (queued?.messageId) {
-      // call-ended already fired — update message directly by ID
-      await db.from('messages').update({ recording_url: mp3Url }).eq('id', queued.messageId);
-      recordingQueue.delete(sid);
-      recordingQueue.delete(ParentCallSid);
-      console.log(`✅ Recording attached to message ${queued.messageId}`);
+    // Update the most recently created call message that has no recording yet
+    const { data: rows } = await db.from('messages')
+      .select('id, user_id, contact_id')
+      .eq('type', 'call')
+      .is('recording_url', null)
+      .gt('created_at', tenMinutesAgo)
+      .order('created_at', { ascending: false })
+      .limit(1);
+
+    if (rows && rows.length > 0) {
+      const row = rows[0];
+      await db.from('messages').update({ recording_url: mp3Url }).eq('id', row.id);
+      console.log(`✅ Recording URL attached to message ${row.id}`);
     } else {
-      // call-ended hasn't fired yet — store URL so call-ended can apply it
-      recordingQueue.set(sid, { recordingUrl: mp3Url });
-      if (ParentCallSid) recordingQueue.set(ParentCallSid, { recordingUrl: mp3Url });
-      setTimeout(() => { recordingQueue.delete(sid); recordingQueue.delete(ParentCallSid); }, 600000);
-      console.log(`⏳ Recording queued for CallSid ${sid} — awaiting call-ended`);
+      // Call-ended fires before recording-ready — insert a pending row to hold it
+      // Actually just log it; the call-ended already handles the message insert.
+      console.log(`⚠️ No matching call message found to attach recording (may already have one or too old)`);
     }
   }
 
