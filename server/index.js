@@ -21,6 +21,10 @@ const authToken = process.env.TWILIO_AUTH_TOKEN;
 const twilioNumber = process.env.TWILIO_PHONE_NUMBER;
 const twilioClient = twilio(accountSid, authToken);
 
+// Prefer an explicit BASE_URL env var (set this in Railway dashboard).
+// Falls back to reconstructing from the request host at runtime.
+const getBaseUrl = (req) => process.env.BASE_URL || `${req.protocol}://${req.get('host')}`;
+
 const upload = multer({ dest: 'uploads/' });
 
 // In-memory queue that reliably bridges call-ended ↔ recording-ready
@@ -444,18 +448,31 @@ app.get('/api/voice/token', (req, res) => {
 // -- TWILIO WEBHOOKS (Public) --
 // Called by Twilio when the Twilio.Device.connect() fires from the browser
 app.post('/api/webhooks/outbound-call', async (req, res) => {
-  let targetNumber = req.body.TargetNumber;
-  if (targetNumber) targetNumber = targetNumber.replace(' ', '+');
+  // Twilio encodes '+' as a space in form-posted params — restore it
+  let targetNumber = (req.body.TargetNumber || '').replace(/\s/g, '+').trim();
   const callerId = process.env.TWILIO_PHONE_NUMBER;
+  const base = getBaseUrl(req);
+  console.log(`📤 outbound-call | target=${targetNumber} | base=${base}`);
+
   const twiml = new twilio.twiml.VoiceResponse();
   if (targetNumber) {
-    const dial = twiml.dial({ 
-      callerId, 
+    // Resolve which user owns the caller ID so we can pass userId in the action URL
+    let ownerUserId = '';
+    const { data: ownerMatch } = await db.from('user_phone_numbers').select('user_id').eq('phone_number', callerId).single();
+    if (ownerMatch?.user_id) {
+      ownerUserId = ownerMatch.user_id;
+    } else {
+      const { data: admin } = await db.from('profiles').select('id').eq('role', 'admin').single();
+      if (admin?.id) ownerUserId = admin.id;
+    }
+
+    const dial = twiml.dial({
+      callerId,
       answerOnBridge: true,
       record: 'record-from-answer',
-      recordingStatusCallback: `https://${req.get('host')}/api/webhooks/recording-ready`,
+      recordingStatusCallback: `${base}/api/webhooks/recording-ready`,
       recordingStatusCallbackMethod: 'POST',
-      action: `https://${req.get('host')}/api/webhooks/call-ended?direction=outbound&target=${encodeURIComponent(targetNumber)}`
+      action: `${base}/api/webhooks/call-ended?direction=outbound&target=${encodeURIComponent(targetNumber)}&userId=${encodeURIComponent(ownerUserId)}`
     });
     dial.number(targetNumber);
   } else {
@@ -463,6 +480,7 @@ app.post('/api/webhooks/outbound-call', async (req, res) => {
   }
   res.type('text/xml').send(twiml.toString());
 });
+
 
 // Called by Twilio when an inbound VOICE call comes in to one of your numbers
 app.post('/api/webhooks/incoming-call', async (req, res) => {
@@ -487,13 +505,14 @@ app.post('/api/webhooks/incoming-call', async (req, res) => {
     }
 
     if (clientIdentity) {
+      const base = getBaseUrl(req);
       const dial = twiml.dial({ 
         timeout: 30, 
         answerOnBridge: true,
         record: 'record-from-answer',
-        recordingStatusCallback: `https://${req.get('host')}/api/webhooks/recording-ready`,
+        recordingStatusCallback: `${base}/api/webhooks/recording-ready`,
         recordingStatusCallbackMethod: 'POST',
-        action: `https://${req.get('host')}/api/webhooks/call-ended?direction=inbound&target=${encodeURIComponent(cleanTo)}&userId=${encodeURIComponent(phoneMatch?.user_id || '')}`
+        action: `${base}/api/webhooks/call-ended?direction=inbound&target=${encodeURIComponent(cleanTo)}&userId=${encodeURIComponent(phoneMatch?.user_id || '')}`
       });
       dial.client(clientIdentity);
     } else {
@@ -514,17 +533,13 @@ app.post('/api/webhooks/call-ended', async (req, res) => {
   let phoneStr = cleanFrom;
   if (phoneStr && !phoneStr.startsWith('+')) phoneStr = '+' + phoneStr;
 
-  // For inbound, if From is a client identity (no digits), use the caller from
-  // the Twilio-supplied 'Called' or fall back gracefully
+  // userId is now explicitly passed in the action URL for both directions
   let actualUserId = userId || '';
-  let contactPhone = direction === 'outbound' ? decodeURIComponent(target || '') : phoneStr;
+  // For outbound: target is the dialed number (already URL-decoded by Express)
+  // For inbound:  From is the caller's number
+  let contactPhone = direction === 'outbound' ? (target || '') : phoneStr;
 
-  if (direction === 'outbound') {
-    const callerId = process.env.TWILIO_PHONE_NUMBER;
-    const { data: phoneMatch } = await db.from('user_phone_numbers').select('user_id').eq('phone_number', callerId).single();
-    if (phoneMatch) actualUserId = phoneMatch.user_id;
-  }
-
+  // Last resort: admin fallback
   if (!actualUserId) {
     const { data: admin } = await db.from('profiles').select('id').eq('role', 'admin').single();
     if (admin) actualUserId = admin.id;
