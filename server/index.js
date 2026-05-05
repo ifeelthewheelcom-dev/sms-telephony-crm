@@ -15,6 +15,8 @@ const port = process.env.PORT || 8142;
 app.use(cors());
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
+// Trust Railway's reverse proxy so req.protocol returns 'https' correctly
+app.set('trust proxy', 1);
 
 const accountSid = process.env.TWILIO_ACCOUNT_SID;
 const authToken = process.env.TWILIO_AUTH_TOKEN;
@@ -22,8 +24,13 @@ const twilioNumber = process.env.TWILIO_PHONE_NUMBER;
 const twilioClient = twilio(accountSid, authToken);
 
 // Prefer an explicit BASE_URL env var (set this in Railway dashboard).
-// Falls back to reconstructing from the request host at runtime.
-const getBaseUrl = (req) => process.env.BASE_URL || `${req.protocol}://${req.get('host')}`;
+// Always force HTTPS — Railway terminates SSL at the load balancer so
+// req.protocol would otherwise return 'http', which Twilio rejects for callbacks.
+const getBaseUrl = (req) => {
+  if (process.env.BASE_URL) return process.env.BASE_URL;
+  const host = req.get('x-forwarded-host') || req.get('host');
+  return `https://${host}`; // always HTTPS — Twilio requires it
+};
 
 const upload = multer({ dest: 'uploads/' });
 
