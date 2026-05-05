@@ -404,19 +404,22 @@ const InboxTab = ({ senders, callStatus, makeCall, selectedContact, setSelectedC
     }
   }, [messages, selectedContact]);
 
-  const loadData = () => {
+  const loadData = (skipPoll = false) => {
     // 1. Fetch contacts for sidebar
     authFetch(`${API_BASE}/contacts`).then(r => r.json()).then(data => {
       if (!data.error) setContacts(data);
     }).catch(()=>{});
 
-    // 2. Safely poll for new inbound messages to trigger chime
-    if (soundEnabled) {
-      authFetch(`${API_BASE}/messages/poll-inbound?since=${encodeURIComponent(lastPollTimeRef.current)}`)
+    // 2. Safely poll for new inbound SMS to trigger chime.
+    // We advance the timestamp BEFORE the fetch to prevent concurrent calls
+    // from using the same `since` value and double-ringing for one message.
+    if (soundEnabled && !skipPoll) {
+      const pollSince = lastPollTimeRef.current;
+      lastPollTimeRef.current = new Date().toISOString(); // advance immediately
+      authFetch(`${API_BASE}/messages/poll-inbound?since=${encodeURIComponent(pollSince)}`)
         .then(r => r.json())
         .then(data => {
           if (data.new_messages) playDing();
-          lastPollTimeRef.current = new Date().toISOString();
         }).catch(()=>{});
     }
 
@@ -463,7 +466,7 @@ const InboxTab = ({ senders, callStatus, makeCall, selectedContact, setSelectedC
            setSelectedContact(prev => ({ ...prev, id: json.contactId }));
        }
     }
-    loadData();
+    loadData(true); // skipPoll: we sent this ourselves, don't ding
   };
   
   const handleStartConversation = async (e) => {
@@ -478,7 +481,7 @@ const InboxTab = ({ senders, callStatus, makeCall, selectedContact, setSelectedC
       if (window.confirm("WARNING: Are you sure you want to permanently delete this contact and all associated chat logs? This cannot be undone.")) {
           await authFetch(`${API_BASE}/contacts/${targetId}`, { method: 'DELETE' });
           setSelectedContact(null);
-          loadData();
+          loadData(true); // skipPoll: user-initiated action
       }
   };
 
@@ -499,7 +502,7 @@ const InboxTab = ({ senders, callStatus, makeCall, selectedContact, setSelectedC
               }
               setSelectedForDeletion(new Set());
               setIsSelectionMode(false);
-              loadData();
+              loadData(true); // skipPoll: user-initiated action
           }
       }
   };

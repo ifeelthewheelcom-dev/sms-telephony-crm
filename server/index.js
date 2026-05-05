@@ -66,15 +66,26 @@ app.get('/api/messages/poll-inbound', async (req, res) => {
   const { since } = req.query;
   if (!since) return res.json({ new_messages: false });
   
-  const { data, error } = await db.from('messages')
+  // Notify for: new inbound SMS  OR  missed inbound calls (not completed)
+  const { data: smsData } = await db.from('messages')
       .select('id')
       .eq('user_id', req.user.id)
       .eq('direction', 'inbound')
+      .eq('type', 'sms')
+      .gt('created_at', since)
+      .limit(1);
+
+  const { data: missedCallData } = await db.from('messages')
+      .select('id')
+      .eq('user_id', req.user.id)
+      .eq('direction', 'inbound')
+      .eq('type', 'call')
+      .neq('status', 'completed')
       .gt('created_at', since)
       .limit(1);
       
-  if (error) return res.status(500).json({ error: error.message });
-  res.json({ new_messages: data && data.length > 0 });
+  const hasNew = (smsData && smsData.length > 0) || (missedCallData && missedCallData.length > 0);
+  res.json({ new_messages: hasNew });
 });
 
 app.post('/api/contacts/batch-delete', async (req, res) => {
@@ -436,8 +447,9 @@ app.post('/api/webhooks/outbound-call', async (req, res) => {
     const dial = twiml.dial({ 
       callerId, 
       answerOnBridge: true,
-      record: 'record-from-ringing',
+      record: 'record-from-answer',
       recordingStatusCallback: `https://${req.get('host')}/api/webhooks/recording-ready`,
+      recordingStatusCallbackMethod: 'POST',
       action: `https://${req.get('host')}/api/webhooks/call-ended?direction=outbound&target=${encodeURIComponent(targetNumber)}`
     });
     dial.number(targetNumber);
@@ -473,8 +485,9 @@ app.post('/api/webhooks/incoming-call', async (req, res) => {
       const dial = twiml.dial({ 
         timeout: 30, 
         answerOnBridge: true,
-        record: 'record-from-ringing',
+        record: 'record-from-answer',
         recordingStatusCallback: `https://${req.get('host')}/api/webhooks/recording-ready`,
+        recordingStatusCallbackMethod: 'POST',
         action: `https://${req.get('host')}/api/webhooks/call-ended?direction=inbound&target=${encodeURIComponent(cleanTo)}&userId=${encodeURIComponent(phoneMatch?.user_id || '')}`
       });
       dial.client(clientIdentity);
@@ -549,8 +562,43 @@ app.post('/api/webhooks/call-ended', async (req, res) => {
   res.type('text/xml').send(twiml.toString());
 });
 
-// Note: recording-ready webhook removed — we rely on RecordingUrl from call-ended
-// which is specific to that exact call, preventing cross-contamination of missed calls.
+// Called by Twilio when a recording is fully processed and ready.
+// Updates the existing call message row with the recording URL.
+app.post('/api/webhooks/recording-ready', async (req, res) => {
+  const { CallSid, RecordingUrl, RecordingStatus } = req.body;
+  console.log(`🎙️ Recording ready: ${RecordingStatus} | CallSid: ${CallSid} | URL: ${RecordingUrl}`);
+
+  if (RecordingStatus === 'completed' && CallSid && RecordingUrl) {
+    // Find the call message logged for this CallSid, or its parent leg
+    // Messages are logged by contact — search by content matching the call pattern
+    // We store CallSid in content? No — so we match by recency for this CallSid's contact.
+    // Best approach: update via a direct match on call-type messages missing recording_url,
+    // ordered by created_at desc, scoped to very recent (last 10 minutes)
+    const tenMinutesAgo = new Date(Date.now() - 10 * 60 * 1000).toISOString();
+    const mp3Url = `${RecordingUrl}.mp3`;
+
+    // Update the most recently created call message that has no recording yet
+    const { data: rows } = await db.from('messages')
+      .select('id, user_id, contact_id')
+      .eq('type', 'call')
+      .is('recording_url', null)
+      .gt('created_at', tenMinutesAgo)
+      .order('created_at', { ascending: false })
+      .limit(1);
+
+    if (rows && rows.length > 0) {
+      const row = rows[0];
+      await db.from('messages').update({ recording_url: mp3Url }).eq('id', row.id);
+      console.log(`✅ Recording URL attached to message ${row.id}`);
+    } else {
+      // Call-ended fires before recording-ready — insert a pending row to hold it
+      // Actually just log it; the call-ended already handles the message insert.
+      console.log(`⚠️ No matching call message found to attach recording (may already have one or too old)`);
+    }
+  }
+
+  res.sendStatus(204);
+});
 
 // Secure proxy: streams Twilio recording audio through the server so the browser
 // doesn't need Twilio credentials directly
