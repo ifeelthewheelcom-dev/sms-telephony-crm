@@ -442,6 +442,12 @@ app.post('/api/webhooks/outbound-call', async (req, res) => {
   let targetNumber = req.body.TargetNumber;
   if (targetNumber) targetNumber = targetNumber.replace(' ', '+');
   const callerId = process.env.TWILIO_PHONE_NUMBER;
+  const fromParam = req.body.From || '';
+  let userId = '';
+  if (fromParam.startsWith('client:desktop_app_')) {
+    userId = fromParam.replace('client:desktop_app_', '');
+  }
+
   const twiml = new twilio.twiml.VoiceResponse();
   if (targetNumber) {
     const dial = twiml.dial({ 
@@ -452,7 +458,7 @@ app.post('/api/webhooks/outbound-call', async (req, res) => {
       recordingStatusCallbackMethod: 'POST'
     });
     dial.number({
-      statusCallback: `https://${req.get('host')}/api/webhooks/call-ended?direction=outbound&target=${encodeURIComponent(targetNumber)}`,
+      statusCallback: `https://${req.get('host')}/api/webhooks/call-ended?direction=outbound&target=${encodeURIComponent(targetNumber)}&userId=${encodeURIComponent(userId)}`,
       statusCallbackEvent: 'completed',
       statusCallbackMethod: 'POST'
     }, targetNumber);
@@ -520,8 +526,8 @@ app.post('/api/webhooks/call-ended', async (req, res) => {
   let actualUserId = userId;
   let contactPhone = direction === 'outbound' ? target : phoneStr;
   
-  if (direction === 'outbound') {
-     // User initiated from browser
+  if (direction === 'outbound' && !actualUserId) {
+     // Fallback: User initiated from browser without explicit userId
      const callerId = process.env.TWILIO_PHONE_NUMBER;
      const { data: phoneMatch } = await db.from('user_phone_numbers').select('user_id').eq('phone_number', callerId).single();
      if (phoneMatch) actualUserId = phoneMatch.user_id;
