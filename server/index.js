@@ -535,7 +535,7 @@ app.post('/api/webhooks/incoming-call', async (req, res) => {
 // Logs the call to the conversation board once it's finished or missed
 app.post('/api/webhooks/call-ended', async (req, res) => {
   const { direction, target, userId } = req.query;
-  const { DialCallStatus, DialCallDuration, From, RecordingUrl, CallSid } = req.body;
+  const { DialCallStatus, DialCallDuration, From, RecordingUrl, CallSid, DialCallSid } = req.body;
   const cleanFrom = (From || '').replace(/[^\d+]/g, '');
   let phoneStr = cleanFrom;
   if (phoneStr && !phoneStr.startsWith('+')) phoneStr = '+' + phoneStr;
@@ -552,7 +552,7 @@ app.post('/api/webhooks/call-ended', async (req, res) => {
     if (admin) actualUserId = admin.id;
   }
 
-  console.log(`📋 call-ended | dir=${direction} status=${DialCallStatus} contact=${contactPhone} user=${actualUserId} callSid=${CallSid}`);
+  console.log(`📋 call-ended | dir=${direction} status=${DialCallStatus} contact=${contactPhone} user=${actualUserId} callSid=${CallSid} dialCallSid=${DialCallSid}`);
 
   if (actualUserId && contactPhone) {
     let contact_id = null;
@@ -584,16 +584,21 @@ app.post('/api/webhooks/call-ended', async (req, res) => {
       }]).select('id').single();
 
       // Wire up in-memory queue so recording-ready can find this message by CallSid
-      if (isCompleted && CallSid && !immediateRecUrl && savedMsg?.id) {
-        const queued = recordingQueue.get(CallSid);
+      if (isCompleted && (CallSid || DialCallSid) && !immediateRecUrl && savedMsg?.id) {
+        const queued = recordingQueue.get(CallSid) || recordingQueue.get(DialCallSid);
         if (queued?.recordingUrl) {
           // recording-ready already fired — apply now
           await db.from('messages').update({ recording_url: queued.recordingUrl }).eq('id', savedMsg.id);
-          recordingQueue.delete(CallSid);
-          console.log(`✅ Recording applied immediately from queue for ${CallSid}`);
+          if (CallSid) recordingQueue.delete(CallSid);
+          if (DialCallSid) recordingQueue.delete(DialCallSid);
+          console.log(`✅ Recording applied immediately from queue for ${CallSid || DialCallSid}`);
         } else {
-          recordingQueue.set(CallSid, { messageId: savedMsg.id });
-          setTimeout(() => recordingQueue.delete(CallSid), 600000);
+          if (CallSid) recordingQueue.set(CallSid, { messageId: savedMsg.id });
+          if (DialCallSid) recordingQueue.set(DialCallSid, { messageId: savedMsg.id });
+          setTimeout(() => {
+            if (CallSid) recordingQueue.delete(CallSid);
+            if (DialCallSid) recordingQueue.delete(DialCallSid);
+          }, 600000);
         }
       }
 

@@ -568,7 +568,18 @@ const InboxTab = ({ senders, callStatus, makeCall, selectedContact, setSelectedC
                 <div className="flex-1 min-w-0" onClick={(e) => { if(isSelectionMode) toggleContactSelection(c.id, e) }}>
                   <div className="flex justify-between items-baseline mb-0.5">
                     <h3 className="font-semibold text-neutral-100 truncate text-sm cursor-pointer">{c.name || c.phone_number}</h3>
-                    <span className="text-[10px] text-neutral-500 flex-shrink-0 ml-2">{new Date(c.updated_at).toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'})}</span>
+                    <span className="text-[10px] text-neutral-500 flex-shrink-0 ml-2">{(() => {
+                      if (!c.updated_at) return '';
+                      const d = new Date(c.updated_at);
+                      const now = new Date();
+                      const isToday = d.toDateString() === now.toDateString();
+                      const yesterday = new Date(now); yesterday.setDate(now.getDate() - 1);
+                      const isYesterday = d.toDateString() === yesterday.toDateString();
+                      const time = d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+                      if (isToday) return `Today, ${time}`;
+                      if (isYesterday) return `Yesterday, ${time}`;
+                      return d.toLocaleDateString([], { month: 'short', day: 'numeric' }) + ', ' + time;
+                    })()}</span>
                   </div>
                   <p className="text-xs text-neutral-400 truncate cursor-pointer">{c.last_message}</p>
                 </div>
