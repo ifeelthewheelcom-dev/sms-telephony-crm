@@ -440,7 +440,12 @@ app.get('/api/voice/token', (req, res) => {
 // Called by Twilio when the Twilio.Device.connect() fires from the browser
 app.post('/api/webhooks/outbound-call', async (req, res) => {
   let targetNumber = req.body.TargetNumber;
-  if (targetNumber) targetNumber = targetNumber.replace(' ', '+');
+  if (targetNumber) {
+    targetNumber = targetNumber.replace(/[^\d+]/g, '');
+    if (!targetNumber.startsWith('+')) {
+      targetNumber = targetNumber.length === 10 ? '+1' + targetNumber : '+' + targetNumber;
+    }
+  }
   const callerId = process.env.TWILIO_PHONE_NUMBER;
   const fromParam = req.body.From || '';
   let userId = '';
