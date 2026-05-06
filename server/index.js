@@ -626,7 +626,10 @@ async function processTranscription(mp3Url, row) {
     ]);
     
     let jsonStr = result.response.text();
-    jsonStr = jsonStr.replace(/^```json\s*/, '').replace(/\s*```$/, '').trim();
+    const match = jsonStr.match(/\{[\s\S]*\}/);
+    if (match) {
+        jsonStr = match[0];
+    }
     const data = JSON.parse(jsonStr);
     
     if (data.transcription && data.summary) {
@@ -639,6 +642,15 @@ async function processTranscription(mp3Url, row) {
     }
   } catch(e) {
     console.error("Error transcribing audio:", e);
+    try {
+      const { data: latestRow } = await db.from('messages').select('content').eq('id', row.id).single();
+      if (latestRow) {
+        const errContent = `${latestRow.content} ||| ${JSON.stringify({ transcription: `ERROR: ${e.message}\n\nStack: ${e.stack}`, summary: "Transcription failed." })}`;
+        await db.from('messages').update({ content: errContent }).eq('id', row.id);
+      }
+    } catch (dbErr) {
+      console.error("Also failed to write error to DB", dbErr);
+    }
   }
 }
 
@@ -671,6 +683,14 @@ app.post('/api/webhooks/recording-ready', async (req, res) => {
       
       if (process.env.GEMINI_API_KEY) {
          processTranscription(mp3Url, row).catch(e => console.error("Transcription failed async:", e));
+      } else {
+         try {
+           const { data: latestRow } = await db.from('messages').select('content').eq('id', row.id).single();
+           if (latestRow) {
+             const errContent = `${latestRow.content} ||| ${JSON.stringify({ transcription: "ERROR: GEMINI_API_KEY is not set in Railway environment variables.", summary: "API Key Missing" })}`;
+             await db.from('messages').update({ content: errContent }).eq('id', row.id);
+           }
+         } catch (e) {}
       }
     } else {
       // Call-ended fires before recording-ready — insert a pending row to hold it
