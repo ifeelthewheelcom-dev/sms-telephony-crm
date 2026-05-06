@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { Phone, Send, User, MessageCircle, Mic, PhoneOff, PhoneCall, Zap, Users, Component, Plus, UploadCloud, CheckCircle, AlertTriangle, Trash2, LogOut, ArrowLeft } from 'lucide-react';
+import { Phone, Send, User, MessageCircle, Mic, PhoneOff, PhoneCall, Zap, Users, Component, Plus, UploadCloud, CheckCircle, AlertTriangle, Trash2, LogOut, ArrowLeft, Sparkles } from 'lucide-react';
 import { Device } from '@twilio/voice-sdk';
 import { supabase } from './supabaseClient';
 import Login from './Login';
@@ -693,14 +693,39 @@ const InboxTab = ({ senders, callStatus, makeCall, selectedContact, setSelectedC
                 return (
                   <div key={msg.id} className={`flex relative z-10 ${isOut ? 'justify-end' : 'justify-start'}`}>
                     <div className={`max-w-[82%] md:max-w-[75%] rounded-xl px-4 py-2.5 shadow text-[14px] leading-relaxed ${isOut ? 'bg-[#005c4b] text-[#e9edef] rounded-tr-none' : 'bg-[#202c33] text-[#e9edef] rounded-tl-none'}`}>
-                      {msg.type === 'call' && (
-                        <div className="mb-2 p-2 bg-[#111b21]/50 rounded-lg border border-neutral-700/50 flex flex-col gap-2">
-                          <div className="flex items-center gap-2 text-blue-400 font-bold text-xs"><PhoneCall size={14} /> {msg.direction === 'inbound' ? 'Incoming' : 'Outgoing'} Call</div>
-                          {msg.recording_url && <audio controls controlsList="nodownload" src={`${API_BASE}/recordings?url=${encodeURIComponent(msg.recording_url)}`} className="h-8 max-w-[200px]" />}
-                        </div>
-                      )}
+                      {msg.type === 'call' && (() => {
+                          const parts = msg.content.split('|||');
+                          const callText = parts[0].trim();
+                          let aiData = null;
+                          if (parts.length > 1) {
+                             try { aiData = JSON.parse(parts[1].trim()); } catch(e){}
+                          }
+                          return (
+                            <div className="flex flex-col gap-2">
+                              <div className="mb-2 p-3 bg-[#111b21]/60 rounded-xl border border-neutral-700/50 flex flex-col gap-3 shadow-inner">
+                                <div className="flex items-center gap-2 text-blue-400 font-bold text-xs"><PhoneCall size={14} /> {msg.direction === 'inbound' ? 'Incoming' : 'Outgoing'} Call</div>
+                                {msg.recording_url && <audio controls controlsList="nodownload" src={`${API_BASE}/recordings?url=${encodeURIComponent(msg.recording_url)}`} className="h-8 max-w-[220px]" />}
+                                {aiData && (
+                                   <div className="mt-1 pt-3 border-t border-neutral-700/50">
+                                      <p className="text-xs font-bold text-purple-400 mb-1 flex items-center gap-1.5"><Sparkles size={12}/> AI Summary</p>
+                                      <p className="text-[13px] text-neutral-300 italic leading-relaxed mb-3">{aiData.summary}</p>
+                                      <details className="group">
+                                         <summary className="text-xs font-medium text-blue-400 cursor-pointer hover:text-blue-300 transition select-none flex items-center gap-1">
+                                            <span className="group-open:hidden">▶ View Transcript</span>
+                                            <span className="hidden group-open:inline">▼ Hide Transcript</span>
+                                         </summary>
+                                         <div className="mt-2 p-2 bg-black/30 rounded-lg border border-neutral-800 text-[12px] text-neutral-400 max-h-48 overflow-y-auto whitespace-pre-wrap font-mono leading-relaxed">
+                                            {aiData.transcription}
+                                         </div>
+                                      </details>
+                                   </div>
+                                )}
+                              </div>
+                              {!msg.recording_url && !aiData && <p className="whitespace-pre-wrap italic opacity-80">{callText}</p>}
+                            </div>
+                          );
+                      })()}
                       {msg.type !== 'call' && <p className="whitespace-pre-wrap">{msg.content}</p>}
-                      {msg.type === 'call' && !msg.recording_url && <p className="whitespace-pre-wrap italic opacity-80">{msg.content}</p>}
                       <div className="flex justify-end items-center mt-1 opacity-60">
                         <span className="text-[9px] uppercase">
                           {new Date(msg.created_at).toLocaleDateString('en-US', {month: 'short', day: 'numeric'}) + ', ' + new Date(msg.created_at).toLocaleTimeString('en-US', {hour: '2-digit', minute:'2-digit'})}

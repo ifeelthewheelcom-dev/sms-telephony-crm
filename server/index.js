@@ -602,6 +602,45 @@ app.post('/api/webhooks/call-ended', async (req, res) => {
 
 // Called by Twilio when a recording is fully processed and ready.
 // Updates the existing call message row with the recording URL.
+
+async function processTranscription(mp3Url, row) {
+  try {
+    const accountSid = process.env.TWILIO_ACCOUNT_SID;
+    const authToken = process.env.TWILIO_AUTH_TOKEN;
+    const auth = Buffer.from(`${accountSid}:${authToken}`).toString('base64');
+    const response = await fetch(mp3Url, { headers: { Authorization: `Basic ${auth}` } });
+    if (!response.ok) throw new Error(`Twilio fetch failed: ${response.statusText}`);
+    
+    const arrayBuffer = await response.arrayBuffer();
+    const base64Audio = Buffer.from(arrayBuffer).toString('base64');
+    
+    const { GoogleGenerativeAI } = require('@google/generative-ai');
+    const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
+    const model = genAI.getGenerativeModel({ model: "gemini-2.5-flash", generationConfig: { responseMimeType: "application/json" } });
+    
+    const prompt = "You are an expert AI transcriptionist and summarizer. Listen to this call recording. Provide a highly accurate word-for-word transcript, and a concise 2-3 sentence summary of the key takeaways. Return ONLY a valid JSON object with 'transcription' and 'summary' string fields.";
+    
+    const result = await model.generateContent([
+      prompt,
+      { inlineData: { mimeType: "audio/mp3", data: base64Audio } }
+    ]);
+    
+    const jsonStr = result.response.text();
+    const data = JSON.parse(jsonStr);
+    
+    if (data.transcription && data.summary) {
+       const { data: latestRow } = await db.from('messages').select('content').eq('id', row.id).single();
+       if (latestRow) {
+         const newContent = `${latestRow.content} ||| ${JSON.stringify({ transcription: data.transcription, summary: data.summary })}`;
+         await db.from('messages').update({ content: newContent }).eq('id', row.id);
+         console.log(`✅ Transcription saved for message ${row.id}`);
+       }
+    }
+  } catch(e) {
+    console.error("Error transcribing audio:", e);
+  }
+}
+
 app.post('/api/webhooks/recording-ready', async (req, res) => {
   const { CallSid, RecordingUrl, RecordingStatus } = req.body;
   console.log(`🎙️ Recording ready: ${RecordingStatus} | CallSid: ${CallSid} | URL: ${RecordingUrl}`);
@@ -628,6 +667,10 @@ app.post('/api/webhooks/recording-ready', async (req, res) => {
       const row = rows[0];
       await db.from('messages').update({ recording_url: mp3Url }).eq('id', row.id);
       console.log(`✅ Recording URL attached to message ${row.id}`);
+      
+      if (process.env.GEMINI_API_KEY) {
+         processTranscription(mp3Url, row).catch(e => console.error("Transcription failed async:", e));
+      }
     } else {
       // Call-ended fires before recording-ready — insert a pending row to hold it
       // Actually just log it; the call-ended already handles the message insert.
