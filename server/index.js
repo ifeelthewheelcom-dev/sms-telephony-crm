@@ -625,7 +625,8 @@ async function processTranscription(mp3Url, row) {
       { inlineData: { mimeType: "audio/mp3", data: base64Audio } }
     ]);
     
-    const jsonStr = result.response.text();
+    let jsonStr = result.response.text();
+    jsonStr = jsonStr.replace(/^```json\s*/, '').replace(/\s*```$/, '').trim();
     const data = JSON.parse(jsonStr);
     
     if (data.transcription && data.summary) {
