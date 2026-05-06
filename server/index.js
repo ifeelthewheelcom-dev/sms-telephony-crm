@@ -592,6 +592,11 @@ app.post('/api/webhooks/call-ended', async (req, res) => {
          status: statusToUse,
          recording_url: null // handled by recording-ready webhook
        }]);
+       
+       await db.from('contacts').update({
+         last_message: msgContent,
+         updated_at: new Date().toISOString()
+       }).eq('id', contact_id);
     }
   }
 
