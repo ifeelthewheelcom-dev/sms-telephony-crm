@@ -407,7 +407,15 @@ const InboxTab = ({ senders, callStatus, makeCall, selectedContact, setSelectedC
   const loadData = (skipPoll = false) => {
     // 1. Fetch contacts for sidebar
     authFetch(`${API_BASE}/contacts`).then(r => r.json()).then(data => {
-      if (!data.error) setContacts(data);
+      if (!data.error) {
+        setContacts(data);
+        // Auto-resolve temporary contacts created during a new outbound call
+        if (selectedContact?.id === 'temp') {
+            const cleanTemp = selectedContact.phone_number.replace(/[^\d]/g, '');
+            const match = data.find(c => c.phone_number.replace(/[^\d]/g, '') === cleanTemp);
+            if (match) setSelectedContact(match);
+        }
+      }
     }).catch(()=>{});
 
     // 2. Safely poll for new inbound SMS to trigger chime.

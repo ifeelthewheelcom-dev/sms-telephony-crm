@@ -440,6 +440,7 @@ app.get('/api/voice/token', (req, res) => {
 // Called by Twilio when the Twilio.Device.connect() fires from the browser
 app.post('/api/webhooks/outbound-call', async (req, res) => {
   let targetNumber = req.body.TargetNumber;
+  const originalTarget = targetNumber;
   if (targetNumber) {
     targetNumber = targetNumber.replace(/[^\d+]/g, '');
     if (!targetNumber.startsWith('+')) {
@@ -463,7 +464,7 @@ app.post('/api/webhooks/outbound-call', async (req, res) => {
       recordingStatusCallbackMethod: 'POST'
     });
     dial.number({
-      statusCallback: `https://${req.get('host')}/api/webhooks/call-ended?direction=outbound&target=${encodeURIComponent(targetNumber)}&userId=${encodeURIComponent(userId)}`,
+      statusCallback: `https://${req.get('host')}/api/webhooks/call-ended?direction=outbound&target=${encodeURIComponent(targetNumber)}&originalTarget=${encodeURIComponent(originalTarget || '')}&userId=${encodeURIComponent(userId)}`,
       statusCallbackEvent: 'completed',
       statusCallbackMethod: 'POST'
     }, targetNumber);
@@ -546,7 +547,27 @@ app.post('/api/webhooks/call-ended', async (req, res) => {
   if (actualUserId) {
     // Upsert contact
     let contact_id = null;
-    const { data: existingContact } = await db.from('contacts').select('id').eq('phone_number', contactPhone).eq('user_id', actualUserId).single();
+    
+    // Generate formatting variations for robust contact matching
+    let variations = [contactPhone];
+    const digitsOnly = contactPhone.replace('+1', '').replace('+', '');
+    if (digitsOnly.length === 10) {
+        variations.push(`(${digitsOnly.slice(0,3)}) ${digitsOnly.slice(3,6)}-${digitsOnly.slice(6)}`);
+        variations.push(`${digitsOnly.slice(0,3)}-${digitsOnly.slice(3,6)}-${digitsOnly.slice(6)}`);
+        variations.push(digitsOnly);
+    }
+    if (req.query.originalTarget) {
+        variations.push(req.query.originalTarget);
+    }
+
+    const { data: existingContacts } = await db.from('contacts')
+        .select('id')
+        .eq('user_id', actualUserId)
+        .in('phone_number', variations)
+        .order('updated_at', { ascending: false })
+        .limit(1);
+        
+    const existingContact = existingContacts && existingContacts.length > 0 ? existingContacts[0] : null;
     if (existingContact) {
       contact_id = existingContact.id;
     } else {
