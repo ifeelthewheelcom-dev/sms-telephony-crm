@@ -62,6 +62,28 @@ app.delete('/api/contacts/:id', async (req, res) => {
   res.json({ success: true });
 });
 
+app.patch('/api/contacts/:id', async (req, res) => {
+  const { id } = req.params;
+  const updates = req.body; // e.g., { is_starred: true, color_tag: 'Hot Lead (Red)' }
+
+  // Fetch current custom_variables
+  const { data: contact, error: fetchErr } = await db.from('contacts').select('custom_variables').eq('id', id).eq('user_id', req.user.id).single();
+  if (fetchErr) return res.status(500).json({ error: fetchErr.message });
+
+  let cv = {};
+  try {
+    cv = contact.custom_variables ? JSON.parse(contact.custom_variables) : {};
+  } catch(e) {}
+
+  // Merge updates
+  cv = { ...cv, ...updates };
+
+  const { error: updateErr } = await db.from('contacts').update({ custom_variables: JSON.stringify(cv) }).eq('id', id).eq('user_id', req.user.id);
+  if (updateErr) return res.status(500).json({ error: updateErr.message });
+  
+  res.json({ success: true, custom_variables: JSON.stringify(cv) });
+});
+
 app.get('/api/messages/poll-inbound', async (req, res) => {
   const { since } = req.query;
   if (!since) return res.json({ new_messages: false });

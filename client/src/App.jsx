@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { Phone, Send, User, MessageCircle, Mic, PhoneOff, PhoneCall, Zap, Users, Component, Plus, UploadCloud, CheckCircle, AlertTriangle, Trash2, LogOut, ArrowLeft, Sparkles } from 'lucide-react';
+import { Phone, Send, User, MessageCircle, Mic, PhoneOff, PhoneCall, Zap, Users, Component, Plus, UploadCloud, CheckCircle, AlertTriangle, Trash2, LogOut, ArrowLeft, Sparkles, Star, Tag, Save } from 'lucide-react';
 import { Device } from '@twilio/voice-sdk';
 import { supabase } from './supabaseClient';
 import Login from './Login';
@@ -258,6 +258,11 @@ const InboxTab = ({ senders, callStatus, makeCall, selectedContact, setSelectedC
   const prevContactId = useRef(null);
   const lastPollTimeRef = useRef(new Date().toISOString());
   const [soundEnabled, setSoundEnabled] = useState(true);
+  const [filterMode, setFilterMode] = useState('All');
+  const [showNotes, setShowNotes] = useState(true);
+  const [notesDraft, setNotesDraft] = useState('');
+  const [isSavingNotes, setIsSavingNotes] = useState(false);
+
 
   // Bulk Delete State
   const [isSelectionMode, setIsSelectionMode] = useState(false);
@@ -439,6 +444,49 @@ const InboxTab = ({ senders, callStatus, makeCall, selectedContact, setSelectedC
 
   useEffect(() => { loadData(); fetchSavedVoicemails(); const i = setInterval(loadData, 2000); return () => clearInterval(i); }, [selectedContact, soundEnabled]);
 
+  
+  const processedContacts = contacts.map(c => {
+    let cv = {};
+    try { cv = JSON.parse(c.custom_variables || '{}'); } catch(e){}
+    return { ...c, is_starred: cv.is_starred, color_tag: cv.color_tag, agent_notes: cv.agent_notes || '' };
+  });
+
+  const filteredContacts = processedContacts.filter(c => {
+    if (filterMode === 'Starred') return c.is_starred;
+    if (filterMode !== 'All') return c.color_tag === filterMode;
+    return true;
+  });
+
+  const handleUpdateContact = async (id, updates) => {
+    // Optimistically update
+    setContacts(contacts.map(c => {
+      if (c.id === id) {
+        let cv = {};
+        try { cv = JSON.parse(c.custom_variables || '{}'); } catch(e){}
+        return { ...c, custom_variables: JSON.stringify({ ...cv, ...updates }) };
+      }
+      return c;
+    }));
+    await authFetch(`${API_BASE}/contacts/${id}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(updates)
+    });
+  };
+
+  useEffect(() => {
+    if (selectedContact) {
+      const p = processedContacts.find(c => c.id === selectedContact.id);
+      if (p) setNotesDraft(p.agent_notes || '');
+    }
+  }, [selectedContact?.id]);
+
+  const handleNotesBlur = () => {
+    if (!selectedContact || selectedContact.id === 'temp') return;
+    setIsSavingNotes(true);
+    handleUpdateContact(selectedContact.id, { agent_notes: notesDraft }).finally(() => setIsSavingNotes(false));
+  };
+
   const selectContact = (contact) => {
     setSelectedContact(contact);
     setOverrideSender('');
@@ -550,6 +598,15 @@ const InboxTab = ({ senders, callStatus, makeCall, selectedContact, setSelectedC
               <button onClick={() => setShowDialer(!showDialer)} className="bg-neutral-800 hover:bg-neutral-700 text-neutral-300 p-2 rounded-full transition shadow h-8 w-8 flex items-center justify-center"><Plus size={16} /></button>
             </div>
           </div>
+          
+        <div className="flex gap-2 px-4 pb-3 overflow-x-auto border-b border-[#2a3942]/40 scrollbar-hide">
+          {['All', 'Starred', 'Hot Lead (Red)', 'Warm (Orange)', 'Customer (Green)', 'Not Interested (Gray)'].map(f => (
+             <button key={f} onClick={() => setFilterMode(f)} className={`whitespace-nowrap px-3 py-1 rounded-full text-xs font-medium transition ${filterMode === f ? 'bg-blue-600 text-white' : 'bg-[#202c33] text-neutral-400 hover:text-neutral-200'}`}>
+               {f.split(' ')[0]}
+             </button>
+          ))}
+        </div>
+
           {isSelectionMode && (
             <div className="flex justify-between items-center bg-[#202c33] p-2 rounded-lg border border-[#2a3942] animate-in slide-in-from-top-2">
                <div className="flex items-center gap-2">
@@ -564,7 +621,7 @@ const InboxTab = ({ senders, callStatus, makeCall, selectedContact, setSelectedC
         </div>
         
         <div className="flex-1 overflow-y-auto">
-          {contacts.map(c => (
+          {filteredContacts.map(c => (
             <div key={c.id} onClick={() => !isSelectionMode && selectContact(c)} className={`p-4 border-b border-[#2a3942]/40 ${!isSelectionMode ? 'cursor-pointer active:bg-[#202c33] hover:bg-[#202c33]' : ''} transition ${selectedContact?.id === c.id && !isSelectionMode ? 'bg-[#2a3942] border-l-4 border-l-blue-500' : ''}`}>
               <div className="flex items-center gap-3">
                 {isSelectionMode && (
@@ -575,17 +632,29 @@ const InboxTab = ({ senders, callStatus, makeCall, selectedContact, setSelectedC
                 </div>
                 <div className="flex-1 min-w-0" onClick={(e) => { if(isSelectionMode) toggleContactSelection(c.id, e) }}>
                   <div className="flex justify-between items-baseline mb-0.5">
-                    <h3 className="font-semibold text-neutral-100 truncate text-sm cursor-pointer">{c.name || c.phone_number}</h3>
+                    
+                    <h3 className="font-semibold text-neutral-100 truncate text-sm cursor-pointer flex items-center gap-1.5">
+                      {c.name || c.phone_number}
+                      {c.color_tag === 'Hot Lead (Red)' && <span className="w-2 h-2 rounded-full bg-rose-500 shadow-[0_0_5px_#f43f5e]"></span>}
+                      {c.color_tag === 'Warm (Orange)' && <span className="w-2 h-2 rounded-full bg-orange-500 shadow-[0_0_5px_#f97316]"></span>}
+                      {c.color_tag === 'Customer (Green)' && <span className="w-2 h-2 rounded-full bg-emerald-500 shadow-[0_0_5px_#10b981]"></span>}
+                      {c.color_tag === 'Not Interested (Gray)' && <span className="w-2 h-2 rounded-full bg-neutral-500 shadow-[0_0_5px_#737373]"></span>}
+                    </h3>
+
                     <span className="text-[10px] text-neutral-500 flex-shrink-0 ml-2">
                       {new Date(c.updated_at).toLocaleDateString('en-US', {month: 'short', day: 'numeric'}) + ', ' + new Date(c.updated_at).toLocaleTimeString('en-US', {hour: '2-digit', minute:'2-digit'})}
                     </span>
-                  </div>
+                  
+                  <button onClick={(e) => { e.stopPropagation(); handleUpdateContact(c.id, { is_starred: !c.is_starred }); }} className="p-1 -mr-2">
+                    <Star size={14} className={`transition ${c.is_starred ? 'fill-yellow-500 text-yellow-500 drop-shadow-[0_0_5px_rgba(234,179,8,0.5)]' : 'text-neutral-600 hover:text-neutral-400'}`} />
+                  </button>
+</div>
                   <p className="text-xs text-neutral-400 truncate cursor-pointer">{c.last_message}</p>
                 </div>
               </div>
             </div>
           ))}
-          {contacts.length === 0 && <div className="p-8 text-center text-neutral-600 text-sm">No active conversations.</div>}
+          {filteredContacts.length === 0 && <div className="p-8 text-center text-neutral-600 text-sm">No active conversations.</div>}
         </div>
         
         {showDialer && (
@@ -627,6 +696,11 @@ const InboxTab = ({ senders, callStatus, makeCall, selectedContact, setSelectedC
                 </div>
               </div>
               <div className="flex gap-2">
+                
+                <button onClick={() => setShowNotes(!showNotes)} className={`hidden lg:flex p-2 rounded-full transition active:scale-95 text-sm ${showNotes ? 'bg-blue-600/20 text-blue-400' : 'bg-neutral-800 text-neutral-500 hover:text-neutral-300'}`} title="Toggle Notes">
+                  <Tag size={15} />
+                </button>
+
                 <button onClick={() => { setShowVoicemailPanel(v => !v); setDropStatus(''); setRecordedBlob(null); setRecordedUrl(null); }} className={`p-2 rounded-full transition active:scale-95 text-sm ${showVoicemailPanel ? 'bg-purple-600 text-white' : 'bg-purple-600/20 hover:bg-purple-600/40 text-purple-400'}`} title="Voicemail Drop">
                   <Mic size={15} />
                 </button>
