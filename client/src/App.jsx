@@ -875,6 +875,51 @@ const InboxTab = ({ senders, callStatus, makeCall, selectedContact, setSelectedC
           </div>
         )}
       </div>
+
+      {/* AGENT NOTES PANEL */}
+      {selectedContact && showNotes && (() => {
+        const p = processedContacts.find(c => c.id === selectedContact.id);
+        return (
+          <div className="absolute right-0 top-0 bottom-0 w-[320px] flex-col bg-[#111b21] border-l border-[#2a3942] z-50 shadow-2xl flex animate-in slide-in-from-right-8 duration-200">
+            <div className="bg-[#202c33] p-4 border-b border-[#2a3942] flex justify-between items-center shadow-sm">
+              <h3 className="text-sm font-bold text-neutral-200 flex items-center gap-2"><Tag size={16} className="text-blue-500"/> Agent Notes</h3>
+              <button onClick={() => setShowNotes(false)} className="text-neutral-500 hover:text-white p-1 transition bg-neutral-800 hover:bg-neutral-700 rounded-md w-7 h-7 flex items-center justify-center">&times;</button>
+            </div>
+            
+            <div className="p-5 flex-1 flex flex-col gap-6 overflow-y-auto">
+               <div className="flex flex-col gap-2">
+                 <label className="text-xs font-semibold text-neutral-400 uppercase tracking-wider">Lead Status Tag</label>
+                 <select 
+                    value={p?.color_tag || ''} 
+                    onChange={(e) => handleUpdateContact(selectedContact.id, { color_tag: e.target.value })}
+                    className="p-2.5 bg-[#202c33] border border-[#2a3942] rounded-lg text-sm text-white focus:outline-none focus:border-blue-500 transition shadow-sm cursor-pointer"
+                 >
+                    <option value="">No Tag</option>
+                    <option value="Hot Lead (Red)">🔥 Hot Lead</option>
+                    <option value="Warm (Orange)">☀️ Warm</option>
+                    <option value="Customer (Green)">✅ Customer</option>
+                    <option value="Not Interested (Gray)">❌ Not Interested</option>
+                 </select>
+               </div>
+               
+               <div className="flex flex-col gap-2 flex-1 relative">
+                 <div className="flex justify-between items-center">
+                   <label className="text-xs font-semibold text-neutral-400 uppercase tracking-wider">Sticky Notes</label>
+                   {isSavingNotes && <span className="text-[10px] text-blue-400 animate-pulse flex items-center gap-1"><Save size={10}/> Saving...</span>}
+                 </div>
+                 <textarea 
+                    value={notesDraft}
+                    onChange={(e) => setNotesDraft(e.target.value)}
+                    onBlur={handleNotesBlur}
+                    placeholder="Jot down notes from the call here... It auto-saves!"
+                    className="flex-1 w-full bg-[#202c33] border border-[#2a3942] rounded-lg p-3 text-sm text-neutral-300 placeholder-neutral-600 focus:outline-none focus:border-blue-500 transition resize-none shadow-inner"
+                 />
+               </div>
+            </div>
+          </div>
+        );
+      })()}
+
     </div>
   );
 };
